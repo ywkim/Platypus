@@ -4,10 +4,16 @@ from typing import List
 
 import fire
 import torch
-import transformers
 from datasets import load_dataset
 
-from transformers import TrainerCallback, TrainingArguments, TrainerState, TrainerControl
+from transformers import (
+    Trainer,
+    TrainerCallback,
+    TrainingArguments,
+    TrainerState,
+    TrainerControl,
+    DataCollatorForSeq2Seq
+)
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 
 from peft import (
@@ -68,7 +74,10 @@ def train(
     cutoff_len: int = 4096,
     val_set_size: int = 0,
     lr_scheduler: str = "cosine",
-    warmup_steps: int = 100, 
+    warmup_steps: int = 100,
+    # mixed precision hyperparams
+    fp16: bool = True,
+    bf16: bool = False,
     # lora hyperparams
     lora_r: int = 16,
     lora_alpha: int = 16,
@@ -87,6 +96,7 @@ def train(
     resume_from_checkpoint: str = None,  # either training checkpoint or final adapter
     prompt_template_name: str = "alpaca"
 ):
+    assert not (fp16 and bf16), "only one of fp16 or bf16 options has to be defined"
     if int(os.environ.get("LOCAL_RANK", 0)) == 0:
         print(
             f"Params using prompt template {prompt_template_name}:\n"
@@ -101,6 +111,8 @@ def train(
             f"val_set_size: {val_set_size}\n"
             f"lr_scheduler: {lr_scheduler}\n"
             f"warmup_steps: {warmup_steps}\n"
+            f"fp16 {fp16}\n"
+            f"bf16 {bf16}\n"
             f"lora_r: {lora_r}\n"
             f"lora_alpha: {lora_alpha}\n"
             f"lora_dropout: {lora_dropout}\n"
@@ -144,11 +156,12 @@ def train(
     model = LlamaForCausalLM.from_pretrained(
         base_model,
         load_in_8bit=True,
-        torch_dtype=torch.float16,
-        device_map=device_map)
+        torch_dtype='auto',
+        device_map=device_map
+    )
 
     tokenizer = LlamaTokenizer.from_pretrained(base_model)
-    
+
     bos = tokenizer.bos_token_id
     eos = tokenizer.eos_token_id
     pad = tokenizer.pad_token_id
@@ -261,19 +274,19 @@ def train(
         model.is_parallelizable = True
         model.model_parallel = True
 
-    trainer = transformers.Trainer(
+    trainer = Trainer(
         model=model,
         train_dataset=train_data,
         eval_dataset=val_data,
-        args=transformers.TrainingArguments(
+        args=TrainingArguments(
             per_device_train_batch_size=micro_batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,
             warmup_steps=warmup_steps,
             num_train_epochs=num_epochs,
             learning_rate=learning_rate,
             # dataloader_num_workers=16,
-            bf16=True,
-            fp16=False,
+            fp16=fp16,
+            bf16=bf16,
             logging_steps=1,
             optim="adamw_torch",
             evaluation_strategy="steps" if val_set_size > 0 else "no",
@@ -289,7 +302,7 @@ def train(
             report_to="wandb" if use_wandb else None,
             run_name=wandb_run_name if use_wandb else None,
         ),
-        data_collator=transformers.DataCollatorForSeq2Seq(
+        data_collator=DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         ),
         # callbacks=[SavePeftModelCallback, LoadBestPeftModelCallback], # ONLY USE LoadBestPeftModelCallback if val_set_size > 0
