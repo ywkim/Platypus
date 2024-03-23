@@ -167,7 +167,7 @@ def train(
     pad = tokenizer.pad_token_id
     print("pre-trained model's BOS EOS and PAD token id:",bos,eos,pad," => It should be 1 2 None")
 
-    tokenizer.pad_token_id = 0  # unk. we want this to be different from the eos token
+    tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
     def tokenize(prompt, add_eos_token=True):
